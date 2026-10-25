@@ -356,6 +356,8 @@ def process_update(upd):
         _seen.append(uid); del _seen[:-500]
     msg = upd.get("message")
     if msg:
+        t = (msg.get("text") or "")
+        print("update:", "command" if t.startswith("/") else ("link" if find_link(t) else "other"), flush=True)
         try:
             on_message(msg)
         except Exception as e:
@@ -368,6 +370,8 @@ class H(BaseHTTPRequestHandler):
         self.send_response(code); self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_GET(self):
+        if self.path.startswith("/diag/") and self.path.split("?")[0] == "/diag/" + SECRET:
+            return self._ok(json.dumps(diag(self.path.split("u=", 1)[1] if "u=" in self.path else "")).encode())
         self._ok(b"Snap bot is running")
     def do_HEAD(self):
         self.send_response(200); self.end_headers()
@@ -382,6 +386,28 @@ class H(BaseHTTPRequestHandler):
             return self._ok()
         self._ok()   # Telegram ko turant 200, kaam background mein
         threading.Thread(target=process_update, args=(upd,), daemon=True).start()
+
+def diag(link):
+    # owner-only check (secret path): kya Snapchat is server ki IP se video deta hai?
+    from urllib.parse import unquote
+    out = {"link": unquote(link)}
+    try:
+        final, items = resolve(unquote(link))
+        out["items"] = len(items)
+        if items:
+            src = items[0]["url"]; cv = clean_variant(src)
+            out["clean_available"] = bool(cv and url_ok(cv)) or ".1034." in src
+            r = SESSION.get(cv if out["clean_available"] and cv else src, stream=True, timeout=30)
+            n = 0
+            for ch in r.iter_content(1 << 16):
+                n += len(ch)
+                if n > 3_000_000: break
+            out["status"] = r.status_code; out["bytes_read"] = n; out["ctype"] = r.headers.get("content-type"); r.close()
+    except SnapError as e:
+        out["snap_error"] = e.hinglish
+    except Exception as e:
+        out["error"] = repr(e)[:200]
+    return out
 
 def register_webhook():
     if not PUBLIC:
